@@ -1,0 +1,43 @@
+---
+run:
+  modules-download-mode: readonly
+linters:
+  enable-all: true
+  disable:
+    # deprecated
+    - deadcode
+    - exhaustivestruct
+    - golint
+    - ifshort
+    - interfacer
+    - maligned
+    - nosnakecase
+    - scopelint
+    - structcheck
+    - varcheck
+    # disabled
+    - depguard
+    - exhaustruct
+    - forbidigo
+    - ireturn
+    - nonamedreturns
+    - varnamelen
+    - wrapcheck
+    - wsl
+linters-settings:
+  testifylint:
+    enable:
+      - bool-compare
+      - compares
+      - empty
+      - error-is-as
+      - error-nil
+      - expected-actual
+      - float-compare
+      # - go-require
+      - len
+      # - nil-compare
+      # - require-error
+      - suite-dont-use-pkg
+      - suite-extra-assert-call
+      - suite-thelper
