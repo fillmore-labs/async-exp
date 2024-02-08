@@ -14,5 +14,20 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Package async provides interfaces and utilities for writing asynchronous code in Go.
+//go:build goexperiment.rangefunc
+
 package async
+
+import (
+	"context"
+
+	// experimental.
+	"iter"
+)
+
+// All returns the results of all completed futures as a range function. If the context is canceled, it returns early.
+func All[R any](ctx context.Context, futures ...Awaitable[R]) iter.Seq2[int, Result[R]] {
+	return func(yield func(int, Result[R]) bool) {
+		_ = YieldAll[R](ctx, yield, futures...)
+	}
+}

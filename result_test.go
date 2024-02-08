@@ -14,5 +14,39 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Package async provides interfaces and utilities for writing asynchronous code in Go.
-package async
+package async_test
+
+import (
+	"testing"
+
+	"fillmore-labs.com/exp/async"
+	"github.com/stretchr/testify/assert"
+)
+
+func TestErrorResult(t *testing.T) {
+	// given
+	f, p := async.NewFuture[int]()
+	p.Reject(errTest)
+	r := <-f
+
+	// when
+	v, err := r.Value(), r.Err()
+
+	// then
+	assert.ErrorIs(t, err, errTest)
+	assert.Equal(t, 0, v)
+}
+
+func TestValueResult(t *testing.T) {
+	// given
+	f, p := async.NewFuture[int]()
+	p.Fulfill(1)
+	r := <-f
+
+	// when
+	v, err := r.Value(), r.Err()
+
+	// then
+	assert.NoError(t, err)
+	assert.Equal(t, 1, v)
+}

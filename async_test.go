@@ -25,49 +25,49 @@ import (
 	"github.com/stretchr/testify/suite"
 )
 
-type PromiseTestSuite struct {
+type AsyncTestSuite struct {
 	suite.Suite
 	promise async.Promise[int]
 	future  async.Future[int]
 }
 
-func TestResultChannelTestSuite(t *testing.T) {
+func TestAsyncTestSuite(t *testing.T) {
 	t.Parallel()
-	suite.Run(t, new(PromiseTestSuite))
+	suite.Run(t, new(AsyncTestSuite))
 }
 
-func (s *PromiseTestSuite) setPromise(promise async.Promise[int]) { s.promise = promise }
-
-func (s *PromiseTestSuite) SetupTest() {
-	s.future = async.NewFuture(s.setPromise)
+func (s *AsyncTestSuite) SetupTest() {
+	s.future, s.promise = async.NewFuture[int]()
 }
 
-func (s *PromiseTestSuite) TestValue() {
+func (s *AsyncTestSuite) TestValue() {
 	// given
-	s.promise.SendValue(1)
+	s.promise.Do(func() (int, error) { return 1, nil })
 
 	// when
 	value, err := s.future.Wait(context.Background())
 
 	// then
-	s.NoError(err)
-	s.Equal(1, value)
+	if s.NoError(err) {
+		s.Equal(1, value)
+	}
 }
 
 var errTest = errors.New("test error")
 
-func (s *PromiseTestSuite) TestError() {
+func (s *AsyncTestSuite) TestError() {
 	// given
-	s.promise.SendError(errTest)
+	ctx := context.Background()
+	s.promise.Do(func() (int, error) { return 0, errTest })
 
 	// when
-	_, err := s.future.Wait(context.Background())
+	_, err := s.future.Wait(ctx)
 
 	// then
 	s.ErrorIs(err, errTest)
 }
 
-func (s *PromiseTestSuite) TestCancellation() {
+func (s *AsyncTestSuite) TestCancellation() {
 	// given
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -79,53 +79,34 @@ func (s *PromiseTestSuite) TestCancellation() {
 	s.ErrorIs(err, context.Canceled)
 }
 
-func (s *PromiseTestSuite) TestPanic() {
+func (s *AsyncTestSuite) TestNoResult() {
 	// given
-	s.promise.SendValue(1)
+	ctx := context.Background()
+	s.promise.Fulfill(1)
+	_, _ = s.future.Wait(ctx)
 
 	// when
-	_, _ = s.future.Wait(context.Background())
+	_, err := s.future.Wait(ctx)
 
 	// then
-	defer func() { _ = recover() }()
-	_, _ = s.future.Wait(context.Background()) // Should panic
-	s.Fail("did not panic")
+	s.ErrorIs(err, async.ErrNoResult)
 }
 
-func add1(value int) (int, error) { return value + 1, nil }
-
-func (s *PromiseTestSuite) TestThen() {
+func (s *AsyncTestSuite) TestTryWait() {
 	// given
-	s.promise.SendValue(1)
 
 	// when
-	value, err := async.Then[int, int](context.Background(), s.future, add1)
+	_, err1 := s.future.TryWait()
+
+	s.promise.Fulfill(1)
+
+	v2, err2 := s.future.TryWait()
+	_, err3 := s.future.TryWait()
 
 	// then
-	s.NoError(err)
-	s.Equal(2, value)
-}
-
-func (s *PromiseTestSuite) TestThenError() {
-	// given
-	s.promise.SendError(errTest)
-
-	// when
-	_, err := async.Then[int, int](context.Background(), s.future, add1)
-
-	// then
-	s.ErrorIs(err, errTest)
-}
-
-func (s *PromiseTestSuite) TestThenAsync() {
-	// given
-	f := async.ThenAsync[int, int](context.Background(), s.future, add1)
-	s.promise.SendValue(1)
-
-	// when
-	value, err := f.Wait(context.Background())
-
-	// then
-	s.NoError(err)
-	s.Equal(2, value)
+	s.ErrorIs(err1, async.ErrNotReady)
+	if s.NoError(err2) {
+		s.Equal(1, v2)
+	}
+	s.ErrorIs(err3, async.ErrNoResult)
 }

@@ -26,43 +26,13 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestMemoizer(t *testing.T) {
-	t.Parallel()
-
-	// given
-	f := async.NewAsyncFuture(func() (int, error) { return 1, nil })
-
-	// when
-	m := f.Memoize()
-	value, err := m.Wait(context.Background())
-
-	// then
-	if assert.NoError(t, err) {
-		assert.Equal(t, 1, value)
-	}
-}
-
-func TestMemoizerError(t *testing.T) {
-	t.Parallel()
-
-	// given
-	f := async.NewAsyncFuture(func() (int, error) { return 0, errTest })
-
-	// when
-	m := f.Memoize()
-	_, err := m.Wait(context.Background())
-
-	// then
-	assert.ErrorIs(t, err, errTest)
-}
-
 func TestCancellation(t *testing.T) {
 	t.Parallel()
 
 	// given
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	f := async.NewFuture(func(_ async.Promise[int]) {})
+	f, _ := async.NewFuture[int]()
 
 	// when
 	m := f.Memoize()
@@ -76,14 +46,8 @@ func TestMultiple(t *testing.T) {
 	t.Parallel()
 
 	// given
-	const iterations = 10
-
-	start := make(chan struct{})
-	f := async.NewAsyncFuture(func() (int, error) {
-		<-start
-
-		return 1, nil
-	})
+	const iterations = 1_000
+	f, p := async.NewFuture[int]()
 
 	// when
 	m := f.Memoize()
@@ -102,7 +66,7 @@ func TestMultiple(t *testing.T) {
 			values[i], errors[i] = m.Wait(ctx)
 		}(i)
 	}
-	close(start)
+	p.Fulfill(1)
 	wg.Wait()
 
 	// then
@@ -113,24 +77,49 @@ func TestMultiple(t *testing.T) {
 	}
 }
 
+func TestMultipleClosed(t *testing.T) {
+	t.Parallel()
+
+	// given
+	const iterations = 1_000
+	f, p := async.NewFuture[int]()
+
+	// when
+	m := f.Memoize()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	var values [iterations]int
+	var errors [iterations]error
+
+	var wg sync.WaitGroup
+	wg.Add(iterations)
+	for i := 0; i < iterations; i++ {
+		go func(i int) {
+			defer wg.Done()
+			values[i], errors[i] = m.Wait(ctx)
+		}(i)
+	}
+	close(p)
+	wg.Wait()
+
+	// then
+	for i := 0; i < iterations; i++ {
+		assert.ErrorIs(t, errors[i], async.ErrNoResult)
+	}
+}
+
 func TestTryWait(t *testing.T) {
 	t.Parallel()
 
 	// given
-	start := make(chan struct{})
-	done := make(chan struct{})
-	f := async.NewAsyncFuture(func() (int, error) {
-		defer close(done)
-		<-start
-
-		return 1, nil
-	})
+	f, p := async.NewFuture[int]()
 
 	// when
 	m := f.Memoize()
 	_, err1 := m.TryWait()
-	close(start)
-	<-done
+	p.Fulfill(1)
 
 	value2, err2 := m.TryWait()
 	value3, err3 := m.TryWait()
@@ -142,5 +131,48 @@ func TestTryWait(t *testing.T) {
 	}
 	if assert.NoError(t, err3) {
 		assert.Equal(t, 1, value3)
+	}
+}
+
+func TestMemoize(t *testing.T) {
+	t.Parallel()
+
+	// given
+	f, _ := async.NewFuture[int]()
+
+	// when
+	m := f.Memoize()
+	mm := m.Memoize()
+
+	// then
+	assert.Same(t, m, mm)
+}
+
+func TestMemoizerAllValues(t *testing.T) {
+	t.Parallel()
+
+	// given
+	const iterations = 1_000
+	f, p := async.NewFuture[int]()
+
+	// when
+	m := f.Memoize()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var memoizers [iterations]async.Awaitable[int]
+	for i := 0; i < iterations; i++ {
+		memoizers[i] = m
+	}
+
+	_ = time.AfterFunc(1*time.Millisecond, func() { p.Fulfill(1) })
+	values, err := async.WaitAllValues(ctx, memoizers[:]...)
+
+	// then
+	if assert.NoError(t, err) {
+		for i := 0; i < iterations; i++ {
+			assert.Equal(t, 1, values[i])
+		}
 	}
 }

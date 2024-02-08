@@ -1,11 +1,12 @@
-# Async (Experimental)
+# Fillmore Labs Async (Experimental)
 
 [![Go Reference](https://pkg.go.dev/badge/fillmore-labs.com/exp/async.svg)](https://pkg.go.dev/fillmore-labs.com/exp/async)
 [![Build Status](https://badge.buildkite.com/06fc8f7bdcfc5c380ea0c7c8bb92a7cee8b1676b841f3c65c8.svg)](https://buildkite.com/fillmore-labs/async-exp)
+[![GitHub Workflow](https://github.com/fillmore-labs/exp-async/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/fillmore-labs/async-exp/actions/workflows/test.yml)
 [![Test Coverage](https://codecov.io/gh/fillmore-labs/async-exp/graph/badge.svg?token=GQUJA8PKJI)](https://codecov.io/gh/fillmore-labs/async-exp)
 [![Maintainability](https://api.codeclimate.com/v1/badges/72fe9626fb821fc70251/maintainability)](https://codeclimate.com/github/fillmore-labs/async-exp/maintainability)
 [![Go Report Card](https://goreportcard.com/badge/fillmore-labs.com/exp/async)](https://goreportcard.com/report/fillmore-labs.com/exp/async)
-[![License](https://img.shields.io/github/license/fillmore-labs/exp-async)](https://github.com/fillmore-labs/exp-async/blob/main/LICENSE)
+[![License](https://img.shields.io/github/license/fillmore-labs/exp-async)](https://www.apache.org/licenses/LICENSE-2.0)
 
 The `async` package provides interfaces and utilities for writing asynchronous code in Go.
 
@@ -36,10 +37,10 @@ address (see [GetMyIP](#getmyip) for an example).
 Now you can do
 
 ```go
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	future := async.NewAsyncFuture(func() (string, error) {
+	future := async.NewFutureAsync(func() (string, error) {
 		return getMyIP(ctx)
 	})
 ```
@@ -48,9 +49,9 @@ and elsewhere in your program, even in a different goroutine
 
 ```go
 	if ip, err := future.Wait(ctx); err == nil {
-		log.Printf("My IP is %s", ip)
+		slog.Info("Found IP", "ip", ip)
 	} else {
-		log.Printf("Error fetching IP: %v", err)
+		slog.Error("Failed to fetch IP", "error", err)
 	}
 ```
 
@@ -61,53 +62,30 @@ decoupling query construction from result processing.
 Sample code to retrieve your IP address:
 
 ```go
-const (
-	serverURL = "https://httpbin.org/ip"
-	timeout   = 2 * time.Second
-)
-
-type IPResponse struct {
-	Origin string `json:"origin"`
-}
+const serverURL = "https://httpbin.org/ip"
 
 func getMyIP(ctx context.Context) (string, error) {
-	resp, err := sendRequest(ctx)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, serverURL, nil)
 	if err != nil {
 		return "", err
 	}
+	req.Header.Set("Accept", "application/json")
 
-	ipResponse, err := decodeResponse(resp)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		return "", err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	ipResponse := &struct {
+		Origin string `json:"origin"`
+	}{}
+
+	if err := json.NewDecoder(resp.Body).Decode(ipResponse); err != nil {
 		return "", err
 	}
 
 	return ipResponse.Origin, nil
-}
-
-func sendRequest(ctx context.Context) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, serverURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Accept", "application/json")
-
-	return http.DefaultClient.Do(req)
-}
-
-func decodeResponse(response *http.Response) (*IPResponse, error) {
-	body, err := io.ReadAll(response.Body)
-	_ = response.Body.Close()
-	if err != nil {
-		return nil, err
-	}
-
-	ipResponse := &IPResponse{}
-	err = json.Unmarshal(body, ipResponse)
-	if err != nil {
-		return nil, err
-	}
-
-	return ipResponse, nil
 }
 ```
 
