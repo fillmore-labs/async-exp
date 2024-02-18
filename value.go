@@ -18,25 +18,31 @@ package async
 
 import "fillmore-labs.com/exp/async/result"
 
-// Transform transforms the value of a successful [Future] synchronously into another, enabling i.e. unwrapping of
-// values.
-func Transform[R, S any](f Future[R], fn func(R, error) (S, error)) Future[S] {
-	ps, fs := New[S]()
-
-	f.OnComplete(func(r result.Result[R]) {
-		ps.Do(func() (S, error) { return fn(r.V()) })
-	})
-
-	return fs
+// value wraps a [Result] to enable multiple queries and avoid unnecessary recomputation.
+type value[R any] struct {
+	_     noCopy
+	done  chan struct{}                        // signals when future has completed
+	v     result.Result[R]                     // valid only when done is closed
+	queue chan []func(result result.Result[R]) // list of functions to execute synchronously when completed
 }
 
-// AndThen executes fn asynchronously when future f completes, enabling chaining of operations.
-func AndThen[R, S any](f Future[R], fn func(R, error) (S, error)) Future[S] {
-	ps, fs := New[S]()
+func (r *value[R]) complete(value result.Result[R]) {
+	r.v = value
+	close(r.done)
 
-	f.OnComplete(func(r result.Result[R]) {
-		go ps.Do(func() (S, error) { return fn(r.V()) })
-	})
+	queue := <-r.queue
+	close(r.queue)
 
-	return fs
+	for _, fn := range queue {
+		fn(value)
+	}
+}
+
+func (r *value[R]) onComplete(fn func(value result.Result[R])) {
+	if queue, ok := <-r.queue; ok {
+		queue = append(queue, fn)
+		r.queue <- queue
+	} else {
+		fn(r.v)
+	}
 }

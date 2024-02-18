@@ -4,4 +4,4 @@ coverage:
     project: false
     patch: false
 ignore:
-  - internal/mocks
+  - nocopy.go

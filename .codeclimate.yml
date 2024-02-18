@@ -12,3 +12,7 @@ exclude_patterns:
   - "go.mod"
   - "go.sum"
   - "LICENSE"
+  - "nocopy.go"
+engines:
+  golangci:
+    enabled: true

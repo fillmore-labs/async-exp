@@ -18,129 +18,109 @@ package async
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"reflect"
-	"runtime/trace"
+
+	"fillmore-labs.com/exp/async/result"
 )
 
-func release[R any](futures []Awaitable[R], released []bool) {
-	for i, done := range released {
-		if !done {
-			futures[i].releaseRunning()
-		}
-	}
+// AwaitAll returns a function that yields the results of all futures.
+// If the context is canceled, it returns an error for the remaining futures.
+func AwaitAll[R any](ctx context.Context, futures ...Future[R]) func(yield func(int, result.Result[R]) bool) {
+	i := newIterator(ctx, func(f Future[R]) result.Result[R] { return f.v }, futures)
+
+	return i.yieldTo
 }
 
-func YieldAll[R any](ctx context.Context, yield func(int, Result[R]) bool, futures ...Awaitable[R]) error {
-	numFutures := len(futures)
-	selectCases := make([]reflect.SelectCase, numFutures+1)
+// AwaitAllAny returns a function that yields the results of all futures.
+// If the context is canceled, it returns an error for the remaining futures.
+func AwaitAllAny(ctx context.Context, futures ...AnyFuture) func(yield func(int, result.Result[any]) bool) {
+	i := newIterator(ctx, func(f AnyFuture) result.Result[any] { return f.any() }, futures)
 
-	for i, future := range futures {
-		future.addRunning()
-		selectCases[i] = reflect.SelectCase{
-			Dir:  reflect.SelectRecv,
-			Chan: reflect.ValueOf(future.channel()),
-		}
-	}
-	selectCases[numFutures] = reflect.SelectCase{
-		Dir:  reflect.SelectRecv,
-		Chan: reflect.ValueOf(ctx.Done()),
-	}
-
-	released := make([]bool, numFutures)
-
-	for i := 0; i < numFutures; i++ {
-		chosen, rcv, ok := reflect.Select(selectCases)
-
-		if chosen == numFutures { // context channel
-			release(futures, released)
-
-			return fmt.Errorf("async wait canceled: %w", ctx.Err())
-		}
-
-		selectCases[chosen].Chan = reflect.Value{}
-
-		r, _ := rcv.Interface().(Result[R])
-		v := futures[chosen].processResult(r, ok)
-		released[chosen] = true
-
-		if !yield(chosen, v) {
-			release(futures, released)
-
-			return nil
-		}
-	}
-
-	return nil
+	return i.yieldTo
 }
 
-// WaitAll returns the results of all completed futures. If the context is canceled, it returns early with an error.
-func WaitAll[R any](ctx context.Context, futures ...Awaitable[R]) ([]Result[R], error) {
-	defer trace.StartRegion(ctx, "asyncWaitAll").End()
-	numFutures := len(futures)
+// AwaitAllResults waits for all futures to complete and returns the results.
+// If the context is canceled, it returns early with errors for the remaining futures.
+func AwaitAllResults[R any](ctx context.Context, futures ...Future[R]) []result.Result[R] {
+	return awaitAllResults(len(futures), AwaitAll(ctx, futures...))
+}
 
-	results := make([]Result[R], numFutures)
-	yield := func(i int, r Result[R]) bool {
+// AwaitAllResultsAny waits for all futures to complete and returns the results.
+// If the context is canceled, it returns early with errors for the remaining futures.
+func AwaitAllResultsAny(ctx context.Context, futures ...AnyFuture) []result.Result[any] {
+	return awaitAllResults(len(futures), AwaitAllAny(ctx, futures...))
+}
+
+func awaitAllResults[R any](n int, iter func(yield func(int, result.Result[R]) bool)) []result.Result[R] {
+	results := make([]result.Result[R], n)
+
+	iter(func(i int, r result.Result[R]) bool {
 		results[i] = r
 
 		return true
-	}
+	})
 
-	err := YieldAll(ctx, yield, futures...)
-	if err != nil {
-		return nil, err
-	}
-
-	return results, nil
+	return results
 }
 
-// WaitAllValues returns the values of all completed futures.
+// AwaitAllValues returns the values of completed futures.
 // If any future fails or the context is canceled, it returns early with an error.
-func WaitAllValues[R any](ctx context.Context, futures ...Awaitable[R]) ([]R, error) {
-	defer trace.StartRegion(ctx, "asyncWaitAllValues").End()
-	numFutures := len(futures)
+func AwaitAllValues[R any](ctx context.Context, futures ...Future[R]) ([]R, error) {
+	return awaitAllValues(len(futures), AwaitAll(ctx, futures...))
+}
 
-	results := make([]R, numFutures)
+// AwaitAllValuesAny returns the values of completed futures.
+// If any future fails or the context is canceled, it returns early with an error.
+func AwaitAllValuesAny(ctx context.Context, futures ...AnyFuture) ([]any, error) {
+	return awaitAllValues(len(futures), AwaitAllAny(ctx, futures...))
+}
+
+func awaitAllValues[R any](n int, iter func(yield func(int, result.Result[R]) bool)) ([]R, error) {
+	results := make([]R, n)
 	var yieldErr error
-	yield := func(i int, r Result[R]) bool {
-		v, err := r.V()
-		if err != nil {
-			yieldErr = fmt.Errorf("async WaitAllValues result %d: %w", i, err)
+
+	iter(func(i int, r result.Result[R]) bool {
+		if r.Err() != nil {
+			yieldErr = fmt.Errorf("list AwaitAllValues result %d: %w", i, r.Err())
 
 			return false
 		}
-		results[i] = v
+		results[i] = r.Value()
 
 		return true
-	}
+	})
 
-	err := YieldAll(ctx, yield, futures...)
-	if yieldErr != nil {
-		return nil, yieldErr
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	return results, nil
+	return results, yieldErr
 }
 
-// WaitFirst returns the result of the first completed future.
-// If the context is canceled, it returns early with an error.
-func WaitFirst[R any](ctx context.Context, futures ...Awaitable[R]) (R, error) {
-	defer trace.StartRegion(ctx, "asyncWaitFirst").End()
+// ErrNoResult is returned when [AwaitFirst] is called on an empty list.
+var ErrNoResult = errors.New("no result")
 
-	var result Result[R]
-	yield := func(i int, r Result[R]) bool {
-		result = r
+// AwaitFirst returns the result of the first completed future.
+// If the context is canceled, it returns early with an error.
+func AwaitFirst[R any](ctx context.Context, futures ...Future[R]) (R, error) {
+	return awaitFirst(AwaitAll(ctx, futures...))
+}
+
+// AwaitFirstAny returns the result of the first completed future.
+// If the context is canceled, it returns early with an error.
+func AwaitFirstAny(ctx context.Context, futures ...AnyFuture) (any, error) {
+	return awaitFirst(AwaitAllAny(ctx, futures...))
+}
+
+func awaitFirst[R any](iter func(yield func(int, result.Result[R]) bool)) (R, error) {
+	var v result.Result[R]
+
+	iter(func(_ int, r result.Result[R]) bool {
+		v = r
 
 		return false
+	})
+
+	if v == nil {
+		return *new(R), ErrNoResult
 	}
 
-	err := YieldAll(ctx, yield, futures...)
-	if err != nil {
-		return *new(R), err
-	}
-
-	return result.V()
+	return v.V()
 }

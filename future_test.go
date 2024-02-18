@@ -18,25 +18,64 @@ package async_test
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
 
 	"fillmore-labs.com/exp/async"
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/goleak"
 )
+
+var errTest = errors.New("test error")
+
+func TestMain(m *testing.M) {
+	goleak.VerifyTestMain(m)
+}
+
+func TestAsyncValue(t *testing.T) {
+	t.Parallel()
+
+	// given
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// when
+	f := async.NewAsync(func() (int, error) { return 1, nil })
+	value, err := f.Await(ctx)
+
+	// then
+	if assert.NoError(t, err) {
+		assert.Equal(t, 1, value)
+	}
+}
+
+func TestAsyncError(t *testing.T) {
+	t.Parallel()
+
+	// given
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// when
+	f := async.NewAsync(func() (int, error) { return 0, errTest })
+	_, err := f.Await(ctx)
+
+	// then
+	assert.ErrorIs(t, err, errTest)
+}
 
 func TestCancellation(t *testing.T) {
 	t.Parallel()
 
 	// given
+	_, f := async.New[int]()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	f, _ := async.NewFuture[int]()
 
 	// when
-	m := f.Memoize()
-	_, err := m.Wait(ctx)
+	_, err := f.Await(ctx)
 
 	// then
 	assert.ErrorIs(t, err, context.Canceled)
@@ -47,66 +86,31 @@ func TestMultiple(t *testing.T) {
 
 	// given
 	const iterations = 1_000
-	f, p := async.NewFuture[int]()
+	p, f := async.New[int]()
 
 	// when
-	m := f.Memoize()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
 	var values [iterations]int
-	var errors [iterations]error
+	var errs [iterations]error
 
 	var wg sync.WaitGroup
 	wg.Add(iterations)
 	for i := 0; i < iterations; i++ {
 		go func(i int) {
 			defer wg.Done()
-			values[i], errors[i] = m.Wait(ctx)
+			values[i], errs[i] = f.Await(ctx)
 		}(i)
 	}
-	p.Fulfill(1)
+	p.Resolve(1)
 	wg.Wait()
 
 	// then
 	for i := 0; i < iterations; i++ {
-		if assert.NoError(t, errors[i]) {
+		if assert.NoError(t, errs[i]) {
 			assert.Equal(t, 1, values[i])
 		}
-	}
-}
-
-func TestMultipleClosed(t *testing.T) {
-	t.Parallel()
-
-	// given
-	const iterations = 1_000
-	f, p := async.NewFuture[int]()
-
-	// when
-	m := f.Memoize()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-
-	var values [iterations]int
-	var errors [iterations]error
-
-	var wg sync.WaitGroup
-	wg.Add(iterations)
-	for i := 0; i < iterations; i++ {
-		go func(i int) {
-			defer wg.Done()
-			values[i], errors[i] = m.Wait(ctx)
-		}(i)
-	}
-	close(p)
-	wg.Wait()
-
-	// then
-	for i := 0; i < iterations; i++ {
-		assert.ErrorIs(t, errors[i], async.ErrNoResult)
 	}
 }
 
@@ -114,15 +118,14 @@ func TestTryWait(t *testing.T) {
 	t.Parallel()
 
 	// given
-	f, p := async.NewFuture[int]()
+	p, f := async.New[int]()
 
 	// when
-	m := f.Memoize()
-	_, err1 := m.TryWait()
-	p.Fulfill(1)
+	_, err1 := f.Try()
 
-	value2, err2 := m.TryWait()
-	value3, err3 := m.TryWait()
+	p.Resolve(1)
+	value2, err2 := f.Try()
+	value3, err3 := f.Try()
 
 	// then
 	assert.ErrorIs(t, err1, async.ErrNotReady)
@@ -134,40 +137,24 @@ func TestTryWait(t *testing.T) {
 	}
 }
 
-func TestMemoize(t *testing.T) {
-	t.Parallel()
-
-	// given
-	f, _ := async.NewFuture[int]()
-
-	// when
-	m := f.Memoize()
-	mm := m.Memoize()
-
-	// then
-	assert.Same(t, m, mm)
-}
-
 func TestMemoizerAllValues(t *testing.T) {
 	t.Parallel()
 
 	// given
 	const iterations = 1_000
-	f, p := async.NewFuture[int]()
+	p, f := async.New[int]()
 
 	// when
-	m := f.Memoize()
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	var memoizers [iterations]async.Awaitable[int]
+	futures := make([]async.Future[int], iterations)
 	for i := 0; i < iterations; i++ {
-		memoizers[i] = m
+		futures[i] = f
 	}
 
-	_ = time.AfterFunc(1*time.Millisecond, func() { p.Fulfill(1) })
-	values, err := async.WaitAllValues(ctx, memoizers[:]...)
+	_ = time.AfterFunc(1*time.Millisecond, func() { p.Resolve(1) })
+	values, err := async.AwaitAllValues(ctx, futures...)
 
 	// then
 	if assert.NoError(t, err) {
@@ -175,4 +162,23 @@ func TestMemoizerAllValues(t *testing.T) {
 			assert.Equal(t, 1, values[i])
 		}
 	}
+}
+
+func TestToChannel(t *testing.T) {
+	t.Parallel()
+
+	// given
+	p, f := async.New[int]()
+	p.Resolve(1)
+
+	// when
+	ch := f.ToChannel()
+
+	// then
+	v, err := (<-ch).V()
+	_, ok := <-ch
+	if assert.NoError(t, err) {
+		assert.Equal(t, 1, v)
+	}
+	assert.False(t, ok)
 }

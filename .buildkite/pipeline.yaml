@@ -11,8 +11,12 @@ steps:
       - test-collector#v1.10.0:
           files: test.xml
           format: junit
+    env:
+      GOEXPERIMENT: rangefunc
 
   - label: ':codecov: + :codeclimate: Coverage'
     commands:
       - go test -race -coverprofile=cover.out ./...
       - sh .buildkite/upload_coverage.sh cover.out
+    env:
+      GOEXPERIMENT: rangefunc

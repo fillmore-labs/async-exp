@@ -21,17 +21,18 @@ import (
 	"testing"
 
 	"fillmore-labs.com/exp/async"
+	"fillmore-labs.com/exp/async/result"
 	"github.com/stretchr/testify/assert"
 )
 
 const iterations = 3
 
-func makePromisesAndFutures[R any]() ([]async.Promise[R], []async.Awaitable[R]) {
+func makePromisesAndFutures[R any]() ([]async.Promise[R], []async.Future[R]) {
 	var promises [iterations]async.Promise[R]
-	var futures [iterations]async.Awaitable[R]
+	var futures [iterations]async.Future[R]
 
 	for i := 0; i < iterations; i++ {
-		futures[i], promises[i] = async.NewFuture[R]()
+		promises[i], futures[i] = async.New[R]()
 	}
 
 	return promises[:], futures[:]
@@ -42,30 +43,27 @@ func TestWaitAll(t *testing.T) {
 
 	// given
 	promises, futures := makePromisesAndFutures[int]()
-	promises[0].Fulfill(1)
-	promises[1].Reject(errTest)
-	close(promises[2])
 
-	memoizers := make([]async.Awaitable[int], 0, len(futures))
-	for _, f := range futures {
-		memoizers = append(memoizers, f.Memoize())
-	}
+	promises[0].Resolve(1)
+	promises[1].Reject(errTest)
+	promises[2].Resolve(2)
 
 	// when
 	ctx := context.Background()
-	results, err := async.WaitAll(ctx, memoizers...)
+	results := async.AwaitAllResults(ctx, futures...)
 
 	// then
-	if assert.NoError(t, err) {
-		v0, err0 := results[0].V()
-		_, err1 := results[1].V()
-		_, err2 := results[2].V()
+	assert.Len(t, results, len(futures))
+	v0, err0 := results[0].V()
+	err1 := results[1].Err()
+	v2, err2 := results[2].V()
 
-		if assert.NoError(t, err0) {
-			assert.Equal(t, 1, v0)
-		}
-		assert.ErrorIs(t, err1, errTest)
-		assert.ErrorIs(t, err2, async.ErrNoResult)
+	if assert.NoError(t, err0) {
+		assert.Equal(t, 1, v0)
+	}
+	assert.ErrorIs(t, err1, errTest)
+	if assert.NoError(t, err2) {
+		assert.Equal(t, 2, v2)
 	}
 }
 
@@ -75,15 +73,16 @@ func TestAllValues(t *testing.T) {
 	// given
 	promises, futures := makePromisesAndFutures[int]()
 	for i := 0; i < iterations; i++ {
-		promises[i].Fulfill(i + 1)
+		promises[i].Resolve(i + 1)
 	}
 
 	// when
 	ctx := context.Background()
-	results, err := async.WaitAllValues(ctx, futures...)
+	results, err := async.AwaitAllValues(ctx, futures...)
 
 	// then
 	if assert.NoError(t, err) {
+		assert.Len(t, results, iterations)
 		for i := 0; i < iterations; i++ {
 			assert.Equal(t, i+1, results[i])
 		}
@@ -99,7 +98,7 @@ func TestAllValuesError(t *testing.T) {
 
 	// when
 	ctx := context.Background()
-	_, err := async.WaitAllValues(ctx, futures...)
+	_, err := async.AwaitAllValues(ctx, futures...)
 
 	// then
 	assert.ErrorIs(t, err, errTest)
@@ -110,15 +109,15 @@ func TestFirst(t *testing.T) {
 
 	// given
 	promises, futures := makePromisesAndFutures[int]()
-	promises[1].Fulfill(2)
+	promises[1].Resolve(2)
 
 	// when
 	ctx := context.Background()
-	result, err := async.WaitFirst(ctx, futures...)
+	v, err := async.AwaitFirst(ctx, futures...)
 
 	// then
 	if assert.NoError(t, err) {
-		assert.Equal(t, 2, result)
+		assert.Equal(t, 2, v)
 	}
 }
 
@@ -127,22 +126,29 @@ func TestCombineCancellation(t *testing.T) {
 
 	subTests := []struct {
 		name    string
-		combine func(context.Context, ...async.Awaitable[int]) (any, error)
+		combine func([]async.Future[int], context.Context) error
 	}{
-		{name: "First", combine: func(ctx context.Context, futures ...async.Awaitable[int]) (any, error) {
-			return async.WaitFirst(ctx, futures...)
+		{name: "First", combine: func(futures []async.Future[int], ctx context.Context) error {
+			_, err := async.AwaitFirst(ctx, futures...)
+
+			return err
 		}},
-		{name: "All", combine: func(ctx context.Context, futures ...async.Awaitable[int]) (any, error) {
-			return async.WaitAll(ctx, futures...)
+		{name: "All", combine: func(futures []async.Future[int], ctx context.Context) error {
+			r := async.AwaitAllResults(ctx, futures...)
+
+			return r[0].Err()
 		}},
-		{name: "AllValues", combine: func(ctx context.Context, futures ...async.Awaitable[int]) (any, error) {
-			return async.WaitAllValues(ctx, futures...)
+		{name: "AllValues", combine: func(futures []async.Future[int], ctx context.Context) error {
+			_, err := async.AwaitAllValues(ctx, futures...)
+
+			return err
 		}},
 	}
 
 	for _, tc := range subTests {
 		combine := tc.combine
-		t.Run(tc.name, func(t *testing.T) {
+		test := func(t *testing.T) {
+			t.Helper()
 			t.Parallel()
 
 			// given
@@ -152,30 +158,32 @@ func TestCombineCancellation(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			cancel()
 
-			_, err := combine(ctx, futures...)
+			err := combine(futures, ctx)
 
 			// then
 			assert.ErrorIs(t, err, context.Canceled)
-		})
+		}
+
+		_ = t.Run(tc.name, test)
 	}
 }
 
-func TestCombineMemoized(t *testing.T) { //nolint:funlen
+func TestCombineMemoized(t *testing.T) {
 	t.Parallel()
 
 	subTests := []struct {
 		name    string
-		combine func(context.Context, ...async.Awaitable[int]) (any, error)
+		combine func(context.Context, []async.Future[int]) (any, error)
 		expect  func(t *testing.T, actual any)
 	}{
-		{name: "First", combine: func(ctx context.Context, futures ...async.Awaitable[int]) (any, error) {
-			return async.WaitFirst(ctx, futures...)
+		{name: "First", combine: func(ctx context.Context, futures []async.Future[int]) (any, error) {
+			return async.AwaitFirst(ctx, futures...)
 		}, expect: func(t *testing.T, actual any) { t.Helper(); assert.Equal(t, 3, actual) }},
-		{name: "All", combine: func(ctx context.Context, futures ...async.Awaitable[int]) (any, error) {
-			return async.WaitAll(ctx, futures...)
+		{name: "All", combine: func(ctx context.Context, futures []async.Future[int]) (any, error) {
+			return async.AwaitAllResults(ctx, futures...), nil
 		}, expect: func(t *testing.T, actual any) {
 			t.Helper()
-			vv, ok := actual.([]async.Result[int])
+			vv, ok := actual.([]result.Result[int])
 			if !ok {
 				assert.Fail(t, "Unexpected result type")
 
@@ -189,91 +197,117 @@ func TestCombineMemoized(t *testing.T) { //nolint:funlen
 				}
 			}
 		}},
-		{name: "AllValues", combine: func(ctx context.Context, futures ...async.Awaitable[int]) (any, error) {
-			return async.WaitAllValues(ctx, futures...)
+		{name: "AllValues", combine: func(ctx context.Context, futures []async.Future[int]) (any, error) {
+			return async.AwaitAllValues(ctx, futures...)
 		}, expect: func(t *testing.T, actual any) { t.Helper(); assert.Equal(t, []int{3, 3, 3}, actual) }},
 	}
 
 	for _, tc := range subTests {
 		combine := tc.combine
 		expect := tc.expect
-		t.Run(tc.name, func(t *testing.T) {
+		_ = t.Run(tc.name, func(t *testing.T) {
+			t.Helper()
 			t.Parallel()
 
 			// given
 			promises, futures := makePromisesAndFutures[int]()
 
-			for _, promise := range promises {
-				promise.Fulfill(3)
-			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-			memoizers := make([]async.Awaitable[int], 0, len(futures))
-			for _, f := range futures {
-				memoizer := f.Memoize()
-				memoizers = append(memoizers, memoizer)
-				_, _ = memoizer.TryWait()
+			for _, p := range promises {
+				p.Resolve(3)
 			}
 
 			// when
-			ctx := context.Background()
-
-			result, err := combine(ctx, memoizers...)
+			v, err := combine(ctx, futures)
 
 			// then
 			if assert.NoError(t, err) {
-				expect(t, result)
+				expect(t, v)
 			}
 		})
 	}
 }
 
-func TestCombineAfterMemoized(t *testing.T) {
+func TestAwaitAllEmpty(t *testing.T) {
 	t.Parallel()
 
-	subTests := []struct {
-		name    string
-		combine func(context.Context, ...async.Awaitable[int]) (any, error)
-		expect  func(t *testing.T, actual any)
-	}{
-		{name: "First", combine: func(ctx context.Context, futures ...async.Awaitable[int]) (any, error) {
-			return async.WaitFirst(ctx, futures...)
-		}},
-		{name: "AllValues", combine: func(ctx context.Context, futures ...async.Awaitable[int]) (any, error) {
-			return async.WaitAllValues(ctx, futures...)
-		}},
+	// given
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// when
+	results := async.AwaitAllResultsAny(ctx)
+
+	// then
+	assert.Empty(t, results)
+}
+
+func TestAwaitAllValuesEmpty(t *testing.T) {
+	t.Parallel()
+
+	// given
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// when
+	results, err := async.AwaitAllValuesAny(ctx)
+
+	// then
+	if assert.NoError(t, err) {
+		assert.Empty(t, results)
 	}
+}
 
-	for _, tc := range subTests {
-		combine := tc.combine
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
+func TestAwaitFirstEmpty(t *testing.T) {
+	t.Parallel()
 
-			// given
-			promises, futures := makePromisesAndFutures[int]()
+	// given
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-			promises[1].Reject(errTest)
+	// when
+	_, err := async.AwaitFirstAny(ctx)
 
-			memoizers := make([]async.Awaitable[int], 0, len(futures))
-			for _, f := range futures {
-				memoizer := f.Memoize()
-				memoizers = append(memoizers, memoizer)
+	// then
+	assert.ErrorIs(t, err, async.ErrNoResult)
+}
+
+func TestAllAny(t *testing.T) {
+	// given
+	t.Parallel()
+	ctx := context.Background()
+
+	p1, f1 := async.New[int]()
+	p2, f2 := async.New[string]()
+	p3, f3 := async.New[struct{}]()
+
+	p1.Resolve(1)
+	p2.Resolve("test")
+	p3.Resolve(struct{}{})
+
+	// when
+	results := make([]result.Result[any], 3)
+	async.AwaitAllAny(ctx, f1, f2, f3)(func(i int, r result.Result[any]) bool {
+		results[i] = r
+
+		return true
+	})
+
+	// then
+	for i, r := range results {
+		if assert.NoError(t, r.Err()) {
+			switch i {
+			case 0:
+				assert.Equal(t, 1, r.Value())
+			case 1:
+				assert.Equal(t, "test", r.Value())
+			case 2:
+				assert.Equal(t, struct{}{}, r.Value())
+			default:
+				assert.Fail(t, "unexpected index")
 			}
-
-			// when
-			ctx := context.Background()
-			_, err := combine(ctx, memoizers...)
-
-			close(promises[0])
-
-			_, err0 := memoizers[0].TryWait()
-			_, err1 := memoizers[1].TryWait()
-			_, err2 := memoizers[2].TryWait()
-
-			// then
-			assert.ErrorIs(t, err, errTest)
-			assert.ErrorIs(t, err0, async.ErrNoResult)
-			assert.ErrorIs(t, err1, errTest)
-			assert.ErrorIs(t, err2, async.ErrNotReady)
-		})
+		}
 	}
 }

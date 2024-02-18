@@ -14,14 +14,34 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-package async
+package result
 
 // Result defines the interface for returning results from asynchronous operations.
 // It encapsulates the final value or error from the operation.
 type Result[R any] interface {
-	V() (R, error) // The V method returns the final value or an error.
-	Value() R      // The Value method returns the final value.
-	Err() error    // The Err method returns the error.
+	V() (R, error)    // The V method returns the final value or an error.
+	Value() R         // The Value method returns the final value.
+	Err() error       // The Err method returns the error.
+	Any() Result[any] // The Any method returns a Result[any] that can be used with any type.
+}
+
+// Of creates a new [Result] from a pair of values.
+func Of[R any](value R, err error) Result[R] {
+	if err != nil {
+		return errorResult[R]{err: err}
+	}
+
+	return valueResult[R]{value: value}
+}
+
+// OfValue creates a new [Result] from a value.
+func OfValue[R any](value R) Result[R] {
+	return valueResult[R]{value: value}
+}
+
+// OfError creates a new [Result] from an error.
+func OfError[R any](err error) Result[R] {
+	return errorResult[R]{err: err}
 }
 
 // valueResult is an implementation of [Result] that simply holds a value.
@@ -40,12 +60,17 @@ func (v valueResult[R]) Value() R {
 }
 
 // The Err method returns nil.
-func (v valueResult[R]) Err() error {
+func (v valueResult[_]) Err() error {
 	return nil
 }
 
+// Any returns the valueResult as a Result[any].
+func (v valueResult[_]) Any() Result[any] {
+	return valueResult[any]{value: v.value}
+}
+
 // errorResult handles errors from failed operations.
-type errorResult[R any] struct {
+type errorResult[_ any] struct {
 	err error
 }
 
@@ -60,6 +85,11 @@ func (e errorResult[R]) Value() R {
 }
 
 // Err returns the stored error.
-func (e errorResult[R]) Err() error {
+func (e errorResult[_]) Err() error {
 	return e.err
+}
+
+// Any returns the errorResult as a Result[any].
+func (e errorResult[_]) Any() Result[any] {
+	return errorResult[any](e)
 }
