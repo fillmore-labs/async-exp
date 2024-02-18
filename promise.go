@@ -16,29 +16,67 @@
 
 package async
 
-// Promise is used to send the result of an asynchronous operation.
-//
-// It is a write-only channel.
-// Either [Promise.Fulfill] or [Promise.Reject] should be called exactly once.
-type Promise[R any] chan<- Result[R]
+import "fillmore-labs.com/exp/async/result"
 
-// Do runs f synchronously, fulfilling the promise once it completes.
-func (p Promise[R]) Do(f func() (R, error)) {
-	if value, err := f(); err == nil {
-		p.Fulfill(value)
-	} else {
-		p.Reject(err)
-	}
+// Promise defines the common operations for resolving a [Future] to its final value.
+// Implementations allow calling on of the functions from any goroutine once. Any subsequent call will panic.
+type Promise[R any] struct {
+	*value[R]
 }
 
-// Fulfill fulfills the promise with a value.
-func (p Promise[R]) Fulfill(value R) {
-	p <- valueResult[R]{value: value}
-	close(p)
+func New[R any]() (Promise[R], Future[R]) {
+	r := value[R]{
+		done:  make(chan struct{}),
+		queue: make(chan []func(result result.Result[R]), 1),
+	}
+	r.queue <- nil
+
+	return Promise[R]{value: &r}, Future[R]{value: &r}
+}
+
+// func (p Promise[R]) Future() Future[R] { return Future[R]{value: p.value} }
+
+// Resolve resolves the promise with a value.
+func (p Promise[R]) Resolve(value R) {
+	p.complete(result.OfValue(value))
 }
 
 // Reject breaks the promise with an error.
 func (p Promise[R]) Reject(err error) {
-	p <- errorResult[R]{err: err}
-	close(p)
+	p.complete(result.OfError[R](err))
+}
+
+// Do runs fn synchronously, fulfilling the [Promise] once it completes.
+func (p Promise[R]) Do(fn func() (R, error)) {
+	p.complete(result.Of(fn()))
+}
+
+// value wraps a [Result] to enable multiple queries and avoid unnecessary recomputation.
+type value[R any] struct {
+	_ noCopy
+
+	v     result.Result[R]                     // valid only when done is closed
+	done  chan struct{}                        // signals when future has completed
+	queue chan []func(result result.Result[R]) // list of functions to execute synchronously when completed
+}
+
+func (r *value[R]) complete(value result.Result[R]) {
+	r.v = value
+	close(r.done)
+
+	queue := <-r.queue
+	close(r.queue)
+
+	for _, fn := range queue {
+		fn(value)
+	}
+}
+
+func (r *value[R]) onComplete(fn func(value result.Result[R])) {
+	if queue, ok := <-r.queue; ok {
+		queue = append(queue, fn)
+		r.queue <- queue
+	} else {
+		fn(r.v)
+	}
 }

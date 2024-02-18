@@ -20,92 +20,78 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
+	"fillmore-labs.com/exp/async/result"
 )
 
-// Future represents an asynchronous operation that will complete sometime in the future.
-//
-// It is a read-only channel that can be used to retrieve the final result of a [Promise] with [Future.Wait].
-type Future[R any] <-chan Result[R]
+// ErrNotReady is returned when a future is not complete.
+var ErrNotReady = errors.New("future not ready")
 
-// NewFuture provides a simple way to create a Future for synchronous operations.
-// This allows synchronous and asynchronous code to be composed seamlessly and separating initiation from running.
-//
-// The returned [Future] can be used to retrieve the eventual result of the [Promise].
-func NewFuture[R any]() (Future[R], Promise[R]) {
-	ch := make(chan Result[R], 1)
-
-	return ch, ch
+// Future represents a read-only view of the result of an asynchronous operation.
+type Future[R any] struct {
+	AnyFuture
+	*value[R]
 }
 
-// NewFutureAsync runs f asynchronously, immediately returning a [Future] that can be used to retrieve the eventual
-// result. This allows separating evaluating the result from computation.
-func NewFutureAsync[R any](fn func() (R, error)) Future[R] {
-	f, p := NewFuture[R]()
+type AnyFuture interface {
+	Done() <-chan struct{}
+	any() result.Result[any]
+}
+
+// NewAsync runs fn asynchronously, immediately returning a [Future] that can be used to retrieve the
+// eventual result. This allows separating evaluating the result from computation.
+func NewAsync[R any](fn func() (R, error)) Future[R] {
+	p, f := New[R]()
 	go p.Do(fn)
 
 	return f
 }
 
-// Awaitable is the underlying interface for [Future] and [Memoizer].
-// Plain futures can only be queried once, while memoizers can be queried multiple times.
-type Awaitable[R any] interface {
-	Wait(ctx context.Context) (R, error) // Wait returns the final result of the associated [Promise].
-	TryWait() (R, error)                 // TryWait returns the result when ready, [ErrNotReady] otherwise.
-	Memoize() *Memoizer[R]               // Memoizer returns a [Memoizer] which can be queried multiple times.
-
-	channel() <-chan Result[R]
-	addRunning()
-	releaseRunning()
-	processResult(r Result[R], ok bool) Result[R]
-}
-
-// ErrNotReady is returned when a future is not complete.
-var ErrNotReady = errors.New("future not ready")
-
-// ErrNoResult is returned when a future completes but has no defined result value.
-var ErrNoResult = errors.New("no result")
-
-// Wait returns the final result of the associated [Promise].
-// It can only be called once and blocks until a result is received or the context is canceled.
-// If you need to read multiple times from a [Future] wrap it with [Future.Memoize].
-func (f Future[R]) Wait(ctx context.Context) (R, error) {
-	select {
-	case r, ok := <-f:
-		return f.processResult(r, ok).V()
+// Await returns the cached result or blocks until a result is available or the context is canceled.
+func (f Future[R]) Await(ctx context.Context) (R, error) {
+	select { // wait for future completion or context cancel
+	case <-f.done:
+		return f.v.V()
 
 	case <-ctx.Done():
-		return *new(R), fmt.Errorf("future wait: %w", ctx.Err())
+		return *new(R), fmt.Errorf("future await: %w", context.Cause(ctx))
 	}
 }
 
-// TryWait returns the result when ready, [ErrNotReady] otherwise.
-func (f Future[R]) TryWait() (R, error) {
+// Try returns the cached result when ready, [ErrNotReady] otherwise.
+func (f Future[R]) Try() (R, error) {
 	select {
-	case r, ok := <-f:
-		return f.processResult(r, ok).V()
+	case <-f.done:
+		return f.v.V()
 
 	default:
 		return *new(R), ErrNotReady
 	}
 }
 
-// Memoize creates a new [Memoizer], consuming the [Future].
-func (f Future[R]) Memoize() *Memoizer[R] {
-	return &Memoizer[R]{done: make(chan struct{}), future: f}
+// Done returns a channel that is closed when the future is complete.
+// It enables the use of future values in select statements.
+func (f Future[R]) Done() <-chan struct{} {
+	return f.done
 }
 
-func (f Future[R]) processResult(r Result[R], ok bool) Result[R] {
-	if ok {
-		return r
+// OnComplete executes fn when the [Future] is fulfilled.
+func (f Future[R]) OnComplete(fn func(r result.Result[R])) {
+	f.onComplete(fn)
+}
+
+func (f Future[R]) ToChannel() <-chan result.Result[R] {
+	ch := make(chan result.Result[R], 1)
+	fn := func(r result.Result[R]) {
+		ch <- r
+		close(ch)
 	}
 
-	return errorResult[R]{err: ErrNoResult}
+	f.onComplete(fn)
+
+	return ch
 }
 
-func (f Future[R]) channel() <-chan Result[R] { //nolint:unused
-	return f
+func (f Future[_]) any() result.Result[any] {
+	return f.v.Any()
 }
-
-func (f Future[R]) addRunning() {} //nolint:unused
-
-func (f Future[R]) releaseRunning() {} //nolint:unused

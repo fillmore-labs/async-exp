@@ -16,21 +16,27 @@
 
 package async
 
-import "context"
+import "fillmore-labs.com/exp/async/result"
 
-// Then transforms the embedded result from an [Awaitable] using 'then'.
-// This allows to easily handle errors embedded in the response.
-// It blocks until a result is received or the context is canceled.
-func Then[R, S any](ctx context.Context, f Awaitable[R], then func(R) (S, error)) (S, error) {
-	reply, err := f.Wait(ctx)
-	if err != nil {
-		return *new(S), err
-	}
+// Transform transforms the value of a successful [Future] synchronously into another, enabling i.e. unwrapping of
+// values.
+func Transform[R, S any](f Future[R], fn func(R, error) (S, error)) Future[S] {
+	ps, fs := New[S]()
 
-	return then(reply)
+	f.OnComplete(func(r result.Result[R]) {
+		ps.Do(func() (S, error) { return fn(r.V()) })
+	})
+
+	return fs
 }
 
-// ThenAsync asynchronously transforms the embedded result from an [Awaitable] using 'then'.
-func ThenAsync[R, S any](ctx context.Context, f Awaitable[R], then func(R) (S, error)) Future[S] {
-	return NewFutureAsync[S](func() (S, error) { return Then(ctx, f, then) })
+// AndThen executes fn asynchronously when future f completes, enabling chaining of operations.
+func AndThen[R, S any](f Future[R], fn func(R, error) (S, error)) Future[S] {
+	ps, fs := New[S]()
+
+	f.OnComplete(func(r result.Result[R]) {
+		go ps.Do(func() (S, error) { return fn(r.V()) })
+	})
+
+	return fs
 }

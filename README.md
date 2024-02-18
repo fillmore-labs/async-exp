@@ -12,22 +12,8 @@ The `async` package provides interfaces and utilities for writing asynchronous c
 
 ## Motivation
 
-Futures and promises are constructs used for asynchronous and concurrent programming, allowing developers to work with
-values that may not be immediately available and can be evaluated in a different execution context.
-
-Go is known for its built-in concurrency features like goroutines and channels.
-The select statement further allows for efficient multiplexing and synchronization of multiple channels, thereby
-enabling developers to coordinate and orchestrate asynchronous operations effectively.
-Additionally, the context package offers a standardized way to manage cancellation, deadlines, and timeouts within
-concurrent and asynchronous code.
-
-On the other hand, Go's error handling mechanism, based on explicit error values returned from functions, provides a
-clear and concise way to handle errors.
-
-The purpose of this package is to provide a thin layer over channels which simplifies the integration of concurrent
-code while providing a cohesive strategy for handling asynchronous errors.
-By adhering to Go's standard conventions for asynchronous and concurrent code, as well as error propagation, this
-package aims to enhance developer productivity and code reliability in scenarios requiring asynchronous operations.
+This is an experimental package which has a similar API as
+[fillmore-labs.com/promise](https://pkg.go.dev/fillmore-labs.com/promise), but is implemented with a structure instead.
 
 ## Usage
 
@@ -37,18 +23,19 @@ address (see [GetMyIP](#getmyip) for an example).
 Now you can do
 
 ```go
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	future := async.NewFutureAsync(func() (string, error) {
-		return getMyIP(ctx)
-	})
+	query := func() (string, error) {
+		return getMyIP(ctx) // Capture context with timeout
+	}
+	future := async.NewAsync(query)
 ```
 
 and elsewhere in your program, even in a different goroutine
 
 ```go
-	if ip, err := future.Wait(ctx); err == nil {
+	if ip, err := future.Await(ctx); err == nil {
 		slog.Info("Found IP", "ip", ip)
 	} else {
 		slog.Error("Failed to fetch IP", "error", err)
@@ -77,26 +64,14 @@ func getMyIP(ctx context.Context) (string, error) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	ipResponse := &struct {
+	ipResponse := struct {
 		Origin string `json:"origin"`
 	}{}
+	err = json.NewDecoder(resp.Body).Decode(&ipResponse)
 
-	if err := json.NewDecoder(resp.Body).Decode(ipResponse); err != nil {
-		return "", err
-	}
-
-	return ipResponse.Origin, nil
+	return ipResponse.Origin, err
 }
 ```
-
-## Concurrency Correctness
-
-When utilizing plain Go channels for concurrency, reasoning over the correctness of concurrent code becomes simpler
-compared to some other implementations of futures and promises.
-Channels provide a clear and explicit means of communication and synchronization between concurrent goroutines, making
-it easier to understand and reason about the flow of data and control in a concurrent program.
-
-Therefore, this library provides a straightforward and idiomatic approach to achieving concurrency correctness.
 
 ## Links
 

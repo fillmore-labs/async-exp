@@ -18,104 +18,102 @@ package async_test
 
 import (
 	"context"
+	"strconv"
 	"testing"
 
 	"fillmore-labs.com/exp/async"
-	"github.com/stretchr/testify/suite"
+	"github.com/stretchr/testify/assert"
 )
 
-type ThenTestSuite struct {
-	suite.Suite
-	future  async.Future[int]
-	promise async.Promise[int]
+func itoa(i int, err error) (string, error) {
+	if err != nil {
+		return "", err
+	}
+
+	if i < 0 {
+		return "", errTest
+	}
+
+	return strconv.Itoa(i), nil
 }
 
-func TestThenTestSuite(t *testing.T) {
+func TestTransform1(t *testing.T) {
 	t.Parallel()
-	suite.Run(t, new(ThenTestSuite))
-}
 
-func (s *ThenTestSuite) SetupSubTest() {
-	s.future, s.promise = async.NewFuture[int]()
-}
+	// given
+	p, f := async.New[int]()
+	p.Resolve(42)
 
-func (s *ThenTestSuite) fromFuture() async.Awaitable[int]   { return s.future }
-func (s *ThenTestSuite) fromMemoizer() async.Awaitable[int] { return s.future.Memoize() }
+	// when
+	f1 := async.Transform(f, itoa)
 
-type futureMemoizerTest[R any] struct {
-	name      string
-	awaitable func() async.Awaitable[R]
-}
-
-func (s *ThenTestSuite) createFutureMemoizerTests() []futureMemoizerTest[int] {
-	return []futureMemoizerTest[int]{
-		{name: "Future", awaitable: s.fromFuture},
-		{name: "Memoizer", awaitable: s.fromMemoizer},
+	// then
+	v, err := f1.Try()
+	if assert.NoError(t, err) {
+		assert.Equal(t, "42", v)
 	}
 }
 
-func add1OrError(value int) (int, error) {
-	if value == 2 {
-		return 0, errTest
-	}
+func TestTransform2(t *testing.T) {
+	t.Parallel()
 
-	return value + 1, nil
-}
+	// given
+	p, f := async.New[int]()
 
-func (s *ThenTestSuite) TestThen() {
-	futureMemoizerTests := s.createFutureMemoizerTests()
+	// when
+	f1 := async.Transform(f, itoa)
+	p.Resolve(42)
 
-	for _, tc := range futureMemoizerTests {
-		_ = s.Run(tc.name, func() {
-			// given
-			awaitable := tc.awaitable()
-			s.promise.Fulfill(1)
-
-			// when
-			value, err := async.Then[int, int](context.Background(), awaitable, add1OrError)
-
-			// then
-			if s.NoError(err) {
-				s.Equal(2, value)
-			}
-		})
+	// then
+	v, err := f1.Try()
+	if assert.NoError(t, err) {
+		assert.Equal(t, "42", v)
 	}
 }
 
-func (s *ThenTestSuite) TestThenError() {
-	futureMemoizerTests := s.createFutureMemoizerTests()
+func TestTransformError1(t *testing.T) {
+	t.Parallel()
 
-	for _, tc := range futureMemoizerTests {
-		_ = s.Run(tc.name, func() {
-			// given
-			awaitable := tc.awaitable()
+	// given
+	p, f := async.New[int]()
 
-			s.promise.Reject(errTest)
+	// when
+	f1 := async.Transform(f, itoa)
+	p.Reject(errTest)
 
-			// when
-			_, err := async.Then(context.Background(), awaitable, add1OrError)
-
-			// then
-			s.ErrorIs(err, errTest)
-		})
-	}
+	// then
+	_, err := f1.Try()
+	assert.ErrorIs(t, err, errTest)
 }
 
-func (s *ThenTestSuite) TestThenAsync() {
-	futureMemoizerTests := s.createFutureMemoizerTests()
+func TestTransformError2(t *testing.T) {
+	t.Parallel()
 
-	for _, tc := range futureMemoizerTests {
-		_ = s.Run(tc.name, func() {
-			// given
-			awaitable := tc.awaitable()
-			f := async.ThenAsync(context.Background(), awaitable, add1OrError)
-			s.promise.Fulfill(2)
+	// given
+	p, f := async.New[int]()
 
-			// when
-			_, err := f.Wait(context.Background())
+	// when
+	f1 := async.Transform(f, itoa)
+	p.Resolve(-1)
 
-			// then
-			s.ErrorIs(err, errTest)
-		})
+	// then
+	_, err := f1.Try()
+	assert.ErrorIs(t, err, errTest)
+}
+
+func TestAndThen(t *testing.T) {
+	t.Parallel()
+
+	// given
+	p, f := async.New[int]()
+
+	// when
+	f1 := async.AndThen(f, itoa)
+	p.Resolve(42)
+
+	// then
+	v, err := f1.Await(context.Background())
+	if assert.NoError(t, err) {
+		assert.Equal(t, "42", v)
 	}
 }
