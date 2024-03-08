@@ -7,6 +7,7 @@
 [![Maintainability](https://api.codeclimate.com/v1/badges/72fe9626fb821fc70251/maintainability)](https://codeclimate.com/github/fillmore-labs/async-exp/maintainability)
 [![Go Report Card](https://goreportcard.com/badge/fillmore-labs.com/exp/async)](https://goreportcard.com/report/fillmore-labs.com/exp/async)
 [![License](https://img.shields.io/github/license/fillmore-labs/exp-async)](https://www.apache.org/licenses/LICENSE-2.0)
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Ffillmore-labs%2Fasync-exp.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2Ffillmore-labs%2Fasync-exp?ref=badge_shield)
 
 The `async` package provides interfaces and utilities for writing asynchronous code in Go.
 
@@ -76,3 +77,7 @@ func getMyIP(ctx context.Context) (string, error) {
 ## Links
 
 - [Futures and Promises](https://en.wikipedia.org/wiki/Futures_and_promises) in the English Wikipedia
+
+
+## License
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Ffillmore-labs%2Fasync-exp.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2Ffillmore-labs%2Fasync-exp?ref=badge_large)
